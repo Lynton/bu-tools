@@ -1,0 +1,23 @@
+{
+  "paths": ["content"],
+  "extensions": [".md"],
+  "exclude": ["^archive/", "^dist/"],
+  "terms": {
+    "genuine(ly)": "\\bgenuine(ly)?\\b",
+    "honest(ly)": "\\bhonest(ly)?\\b",
+    "actual(ly)": "\\bactual(ly)?\\b",
+    "truly": "\\btruly\\b",
+    "worth noting": "\\bworth (noting|naming|mentioning)\\b",
+    "not just": "\\b(not|isn't|aren't|more than) just\\b"
+  },
+  "exempt_quoted": true,
+  "exempt_patterns": [],
+  "exempt_terms_in_files": {},
+  "density_per_1k_max": 0,
+  "cadence": {},
+  "quotecheck": {
+    "documents": ["content"],
+    "sources": ["sources"],
+    "source_extensions": [".md", ".txt"]
+  }
+}
