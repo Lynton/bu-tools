@@ -88,6 +88,18 @@ The general lesson: **a word outside the quotation marks is not thereby own voic
 | **PARAPHRASE** | whole sentences | unquoted prose tracking the source's wording, by shared 5-word shingles |
 | **TERM-IN-SOURCE** | single words | a term your config would flag that the quoted source also uses — the narrowest and, on the case that prompted it, the one that fires |
 
+**TERM-IN-SOURCE matches the collocation, not the bare word.** A first cut compared single
+words and returned 211 hits: *actually* appears in any long source, so the bare word carries no
+provenance at all. What carries it is the pairing — *genuine understanding* is Sekrst's,
+*genuine* alone is nobody's. On the same corpus the collocation version returns one hit before
+the fix and none after it.
+
+**Quotation spans are detected separately from quotation extraction**, and HTML tags are masked
+first. Both matter more than they sound: attribute quotes (`class="reading"`) and any quotation
+under the 25-character extraction floor still consume their partner mark, and leaving them out
+desynchronises every pair after them — which makes properly quoted text read as own voice, the
+exact error the tool exists to prevent.
+
 TERM-IN-SOURCE is the guard to run before any register sweep. It reports, for every flagged
 term sitting outside quotation marks, whether a source the document quotes uses that same
 word. On the Sekrst entry it fires on both lines the sweep touched, including the one the
@@ -109,3 +121,13 @@ Sekrst's *genuine understanding* and Birch's *might genuinely be achieved*, both
 just outside the marks, both the authors' own terms — Birch's the verbatim statement of
 his Challenge Two. The lesson generalises past that pass: **a word outside the quotation
 marks is not thereby own voice.**
+
+
+## Performance
+
+The source index is joined into one blob with NUL separators — the needles are pure `[a-z0-9]`
+after normalisation, so a match can never span a file boundary. Even so, a whole-corpus
+`quotecheck` scales with the number of quotations that are *not* found, each of which costs a
+full scan: roughly two minutes over 1,300 quotations against 216 sources. Scoped to one
+directory it is around ten seconds, which is the shape that matters — the pre-edit check runs on
+what you are editing, and the whole-corpus run is a periodic audit.

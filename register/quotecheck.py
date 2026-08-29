@@ -42,6 +42,22 @@ SHINGLE = 5                 # words per shingle for close-paraphrase detection
 PARAPHRASE_MIN = 2          # distinct shingles from one sentence found in one source
 
 QUOTE = re.compile(r'[“"]([^“”"]{25,600})[”"]')
+# Extraction wants a quotation worth checking (>=25 chars). SPAN wants every pair,
+# because a short quote's marks still consume their partners — leaving them out
+# desynchronises every pair after it and makes quoted text read as own voice.
+QUOTE_SPAN = re.compile(r'"[^"]*"|“[^”]*”')
+TAG = re.compile(r"<[^>]*>")
+
+
+def mask_tags(s: str) -> str:
+    """Blank out HTML tags, preserving offsets.
+
+    Entries in an HTML-fragment corpus carry attribute quotes (class="reading"),
+    which offset every quotation pair after them and make a passage inside
+    quotation marks look like own voice. Masking to equal-length spaces keeps
+    match positions aligned with the original line.
+    """
+    return TAG.sub(lambda m: " " * len(m.group(0)), s)
 
 
 def norm(s: str) -> str:
@@ -107,17 +123,32 @@ def main() -> int:
         sys.stderr.write("no sources indexed — nothing to check against\n")
         return 2
 
+    # One joined index rather than 216 separate scans. The needles are pure
+    # [a-z0-9] after normalisation, so a NUL separator can never be spanned by a
+    # match — file boundaries cannot produce a false hit. This is the difference
+    # between a tool that runs in seconds and one nobody runs.
+    import bisect
+    joined_parts, starts, offset = [], [], 0
+    for b in blobs:
+        starts.append(offset)
+        joined_parts.append(b)
+        offset += len(b) + 1
+    joined = "\x00".join(blobs)
+
     def locate(needle: str):
-        for nm, b in zip(names, blobs):
-            if needle and needle in b:
-                return nm, b.index(needle), b
-        return None, -1, None
+        if not needle:
+            return None, -1, None
+        at = joined.find(needle)
+        if at < 0:
+            return None, -1, None
+        i = bisect.bisect_right(starts, at) - 1
+        return names[i], at - starts[i], blobs[i]
 
     findings = []
     for f in walk(root, qc["documents"], doc_exts):
         rel = os.path.relpath(f, root)
         text = open(f, encoding="utf-8", errors="replace").read()
-        for m in QUOTE.finditer(text):
+        for m in QUOTE.finditer(mask_tags(text)):
             raw = m.group(1).strip()
             if len(raw.split()) < MINWORDS:
                 continue
@@ -152,35 +183,84 @@ def main() -> int:
                     rec["status"], rec["source"] = "NOT-IN-CORPUS", None
             findings.append(rec)
 
-    # ---- close-paraphrase pass -------------------------------------------
-    # SPILL only sees words immediately after a closing mark. The harder case is a
-    # sentence that never quotes at all yet tracks the source's wording — which is
-    # how Birch's "might genuinely be achieved" was edited as own voice. Sentences
-    # already largely inside quotation marks are skipped; those are the quote checks'
-    # business.
-    paraphrase = []
-    if not qc.get("skip_paraphrase"):
-        for f in walk(root, qc["documents"], doc_exts):
-            rel = os.path.relpath(f, root)
-            text = open(f, encoding="utf-8", errors="replace").read()
-            for ln, line in enumerate(text.splitlines(), 1):
-                stripped = QUOTE.sub(" ", line)
-                if len(stripped.split()) < 12:
-                    continue
-                for sent in re.split(r"(?<=[.!?])\s+", stripped):
-                    sh = shingles(sent)
-                    if len(sh) < PARAPHRASE_MIN:
+    # ---- source-fidelity passes -----------------------------------------
+    # Both passes below run only against sources the document actually quotes.
+    # That is faster (comparing every sentence against every source was quadratic
+    # and unusable on a real corpus) and more precise: a shingle shared with an
+    # unrelated source is coincidence, not provenance.
+    by_name = dict(zip(names, blobs))
+    doc_sources: dict[str, set[str]] = {}
+    for r in findings:
+        if r.get("source"):
+            doc_sources.setdefault(r["file"], set()).add(r["source"])
+
+    terms = {n: re.compile(rx, re.I) for n, rx in (qc.get("terms") or {}).items()}
+    skip_par = qc.get("skip_paraphrase")
+    paraphrase, term_hits = [], []
+
+    for rel, srcs in doc_sources.items():
+        text = open(os.path.join(root, rel), encoding="utf-8", errors="replace").read()
+        src_blobs = [(s, by_name[s]) for s in sorted(srcs) if s in by_name]
+        for ln, line in enumerate(text.splitlines(), 1):
+            masked = mask_tags(line)
+            spans = [(m.start(), m.end()) for m in QUOTE_SPAN.finditer(masked)]
+
+            # word scale — a flagged term outside the marks that the source also uses.
+            # The bare word is worthless as a signal: "actually" appears in any long
+            # source, which is why a first cut returned 211 hits. What carries
+            # provenance is the COLLOCATION — the term plus the word it sits with.
+            # "genuine understanding" is Sekrst's; "genuine" alone is nobody's.
+            for name, rx in terms.items():
+                for m in rx.finditer(line):
+                    if any(a <= m.start() < b for a, b in spans):
                         continue
-                    for nm, blob in zip(names, blobs):
-                        found = [s for s in sh if s and s in blob]
-                        if len(found) >= PARAPHRASE_MIN:
-                            paraphrase.append({
-                                "file": rel, "line": ln, "source": nm,
-                                "matched": len(found), "of": len(sh),
-                                "text": sent.strip()[:200],
-                                "example": found[0],
-                            })
+                    nxt = re.match(r"\W*([A-Za-z0-9']+)", line[m.end():])
+                    prv = re.search(r"([A-Za-z0-9']+)\W*$", line[:m.start()])
+                    grams = []
+                    if nxt:
+                        grams.append((norm(m.group(0) + nxt.group(1)),
+                                      f"{m.group(0)} {nxt.group(1)}"))
+                    if prv:
+                        grams.append((norm(prv.group(1) + m.group(0)),
+                                      f"{prv.group(1)} {m.group(0)}"))
+                    hit = None
+                    for gram, shown in grams:
+                        for s, blob in src_blobs:
+                            if gram and gram in blob:
+                                hit = (s, shown)
+                                break
+                        if hit:
                             break
+                    if hit:
+                        term_hits.append({
+                            "file": rel, "line": ln, "term": name,
+                            "word": hit[1], "source": hit[0],
+                            "context": line[max(0, m.start() - 80):m.end() + 80].strip()})
+
+            # sentence scale — unquoted prose tracking the source's wording
+            if skip_par:
+                continue
+            stripped = QUOTE_SPAN.sub(" ", masked)
+            if len(stripped.split()) < 12:
+                continue
+            for sent in re.split(r"(?<=[.!?])\s+", stripped):
+                sh = [s for s in shingles(sent) if s]
+                if len(sh) < PARAPHRASE_MIN:
+                    continue
+                for s, blob in src_blobs:
+                    found = [x for x in sh if x in blob]
+                    if len(found) >= PARAPHRASE_MIN:
+                        paraphrase.append({"file": rel, "line": ln, "source": s,
+                                           "matched": len(found), "of": len(sh),
+                                           "text": sent.strip()[:200], "example": found[0]})
+                        break
+
+    if term_hits:
+        print(f"\n=== TERM-IN-SOURCE ({len(term_hits)}) — a flagged term that the quoted source also uses")
+        for r in term_hits:
+            print(f"  {r['file']}:{r['line']}  [{r['term']}] \u201c{r['word']}\u201d -> also in {r['source']}")
+            print(f"    …{r['context']}…")
+            print("    -> may be the author's term. Check the source before removing it.")
 
     if paraphrase:
         print(f"\n=== PARAPHRASE ({len(paraphrase)}) — unquoted prose tracking a source's wording")
@@ -188,41 +268,6 @@ def main() -> int:
             print(f"  {r['file']}:{r['line']}  [{r['source']}]  {r['matched']}/{r['of']} shingles")
             print(f"    {r['text']}…")
             print("    -> the wording is the source's. Do not edit as own voice.")
-
-    # ---- term-in-source pass ---------------------------------------------
-    # The narrowest and most useful guard. PARAPHRASE works at sentence scale; the
-    # damage that prompted this tool was two words — Sekrst's "genuine understanding"
-    # — lifted from a source and sitting outside the marks. So: for every register
-    # term the config would flag, if the document quotes a source and that source
-    # uses the same term, say so before anyone edits it.
-    term_hits = []
-    terms = {n: re.compile(rx, re.I) for n, rx in (qc.get("terms") or {}).items()}
-    if terms:
-        doc_sources: dict[str, set[str]] = {}
-        for r in findings:
-            if r.get("source"):
-                doc_sources.setdefault(r["file"], set()).add(r["source"])
-        by_name = dict(zip(names, blobs))
-        for rel, srcs in doc_sources.items():
-            text = open(os.path.join(root, rel), encoding="utf-8", errors="replace").read()
-            for ln, line in enumerate(text.splitlines(), 1):
-                spans = [(m.start(), m.end()) for m in QUOTE.finditer(line)]
-                outside = [(n, m) for n, rx in terms.items() for m in rx.finditer(line)
-                           if not any(a <= m.start() < b for a, b in spans)]
-                for name, m in outside:
-                    for s in sorted(srcs):
-                        if norm(m.group(0)) and norm(m.group(0)) in by_name.get(s, ""):
-                            term_hits.append({"file": rel, "line": ln, "term": name,
-                                              "word": m.group(0), "source": s,
-                                              "context": line[max(0, m.start() - 80):m.end() + 80].strip()})
-                            break
-
-    if term_hits:
-        print(f"\n=== TERM-IN-SOURCE ({len(term_hits)}) — a flagged term that the quoted source also uses")
-        for r in term_hits:
-            print(f"  {r['file']}:{r['line']}  [{r['term']}] -> also in {r['source']}")
-            print(f"    …{r['context']}…")
-            print("    -> may be the author's term. Check the source before removing it.")
 
     counts = Counter(r["status"] for r in findings)
     for status, label in (("SPILL", "the document continues in the source's wording"),

@@ -65,8 +65,16 @@ WORD = re.compile(r"\b[\w'-]+\b")
 # Straight and curly pairs, plus <q>. Non-greedy, single line: a quotation that
 # spans lines is not detected, which is the safe direction — it reports rather
 # than silently exempts.
-QUOTED = re.compile(r"\"[^\"]{2,}\"|“[^”]{2,}”|'[^']{8,}'|<q>.*?</q>")
+QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|'[^']{8,}'|<q>.*?</q>")
 FRONTMATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
+TAG = re.compile(r"<[^>]*>")
+
+
+def mask_tags(s: str) -> str:
+    """Blank out HTML tags, preserving offsets — attribute quotes otherwise
+    offset every quotation pair after them and make quoted text read as own
+    voice."""
+    return TAG.sub(lambda m: " " * len(m.group(0)), s)
 
 
 def words(text: str) -> int:
@@ -145,7 +153,7 @@ def scan_text(path: str, raw: str, cfg: dict, only_lines: set[int] | None = None
     for i, line in enumerate(raw.splitlines(), 1):
         if only_lines is not None and i not in only_lines:
             continue
-        spans = quoted_spans(line) if cfg["exempt_quoted"] else []
+        spans = quoted_spans(mask_tags(line)) if cfg["exempt_quoted"] else []
         line_exempt = next((p.pattern for p in exempt_pats if p.search(line)), None)
         for name, rx in compiled.items():
             for m in rx.finditer(line):
