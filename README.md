@@ -74,6 +74,30 @@ register repair from quietly becoming an unmandated rewrite.
 Exemptions are reported, never hidden — an exempt hit prints with its reason, so a wrong
 exemption is visible rather than silent.
 
+## The three source-fidelity checks
+
+`quotecheck` runs three passes past plain quotation matching, in widening scope. All three
+exist because a register sweep on 2026-08-29 edited three sentences that were reporting a
+source, two of them stripping the author's own term — Sekrst's *genuine understanding* and
+Birch's *might genuinely be achieved*, the latter the verbatim statement of his Challenge Two.
+The general lesson: **a word outside the quotation marks is not thereby own voice.**
+
+| Check | Scope | Catches |
+|---|---|---|
+| **SPILL** | words immediately after a closing mark | the document carries on in the source's exact words |
+| **PARAPHRASE** | whole sentences | unquoted prose tracking the source's wording, by shared 5-word shingles |
+| **TERM-IN-SOURCE** | single words | a term your config would flag that the quoted source also uses — the narrowest and, on the case that prompted it, the one that fires |
+
+TERM-IN-SOURCE is the guard to run before any register sweep. It reports, for every flagged
+term sitting outside quotation marks, whether a source the document quotes uses that same
+word. On the Sekrst entry it fires on both lines the sweep touched, including the one the
+sweep got wrong.
+
+**Its reach is only as wide as the converted corpus.** Sources held as PDFs with no text
+conversion are not indexed, so their terms cannot be checked. Birch's manifesto was in that
+state and the tool is silent on it — converting primaries to text under the sources directory
+is what makes them checkable.
+
 ## The SPILL check
 
 `quotecheck` flags a passage that closes its quotation mark and then keeps using the

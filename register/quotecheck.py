@@ -38,12 +38,20 @@ from collections import Counter
 MINWORDS = 6
 SPILL_CHARS = 120           # how far past the closing mark to compare
 SPILL_MIN_MATCH = 40        # normalised chars that must agree to call it a spill
+SHINGLE = 5                 # words per shingle for close-paraphrase detection
+PARAPHRASE_MIN = 2          # distinct shingles from one sentence found in one source
 
 QUOTE = re.compile(r'[“"]([^“”"]{25,600})[”"]')
 
 
 def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def shingles(text: str, n: int = SHINGLE) -> list[str]:
+    """Normalised n-word windows, for detecting close paraphrase."""
+    w = re.findall(r"[A-Za-z0-9']+", text)
+    return [norm("".join(w[i:i + n])) for i in range(len(w) - n + 1)]
 
 
 def load_config(path: str) -> dict:
@@ -55,6 +63,8 @@ def load_config(path: str) -> dict:
     if not qc or not qc.get("documents") or not qc.get("sources"):
         sys.stderr.write("config needs quotecheck.documents and quotecheck.sources\n")
         sys.exit(2)
+    # the register terms live at the top level; the term-in-source pass needs them
+    qc.setdefault("terms", cfg.get("terms", {}))
     return qc
 
 
@@ -142,6 +152,78 @@ def main() -> int:
                     rec["status"], rec["source"] = "NOT-IN-CORPUS", None
             findings.append(rec)
 
+    # ---- close-paraphrase pass -------------------------------------------
+    # SPILL only sees words immediately after a closing mark. The harder case is a
+    # sentence that never quotes at all yet tracks the source's wording — which is
+    # how Birch's "might genuinely be achieved" was edited as own voice. Sentences
+    # already largely inside quotation marks are skipped; those are the quote checks'
+    # business.
+    paraphrase = []
+    if not qc.get("skip_paraphrase"):
+        for f in walk(root, qc["documents"], doc_exts):
+            rel = os.path.relpath(f, root)
+            text = open(f, encoding="utf-8", errors="replace").read()
+            for ln, line in enumerate(text.splitlines(), 1):
+                stripped = QUOTE.sub(" ", line)
+                if len(stripped.split()) < 12:
+                    continue
+                for sent in re.split(r"(?<=[.!?])\s+", stripped):
+                    sh = shingles(sent)
+                    if len(sh) < PARAPHRASE_MIN:
+                        continue
+                    for nm, blob in zip(names, blobs):
+                        found = [s for s in sh if s and s in blob]
+                        if len(found) >= PARAPHRASE_MIN:
+                            paraphrase.append({
+                                "file": rel, "line": ln, "source": nm,
+                                "matched": len(found), "of": len(sh),
+                                "text": sent.strip()[:200],
+                                "example": found[0],
+                            })
+                            break
+
+    if paraphrase:
+        print(f"\n=== PARAPHRASE ({len(paraphrase)}) — unquoted prose tracking a source's wording")
+        for r in paraphrase:
+            print(f"  {r['file']}:{r['line']}  [{r['source']}]  {r['matched']}/{r['of']} shingles")
+            print(f"    {r['text']}…")
+            print("    -> the wording is the source's. Do not edit as own voice.")
+
+    # ---- term-in-source pass ---------------------------------------------
+    # The narrowest and most useful guard. PARAPHRASE works at sentence scale; the
+    # damage that prompted this tool was two words — Sekrst's "genuine understanding"
+    # — lifted from a source and sitting outside the marks. So: for every register
+    # term the config would flag, if the document quotes a source and that source
+    # uses the same term, say so before anyone edits it.
+    term_hits = []
+    terms = {n: re.compile(rx, re.I) for n, rx in (qc.get("terms") or {}).items()}
+    if terms:
+        doc_sources: dict[str, set[str]] = {}
+        for r in findings:
+            if r.get("source"):
+                doc_sources.setdefault(r["file"], set()).add(r["source"])
+        by_name = dict(zip(names, blobs))
+        for rel, srcs in doc_sources.items():
+            text = open(os.path.join(root, rel), encoding="utf-8", errors="replace").read()
+            for ln, line in enumerate(text.splitlines(), 1):
+                spans = [(m.start(), m.end()) for m in QUOTE.finditer(line)]
+                outside = [(n, m) for n, rx in terms.items() for m in rx.finditer(line)
+                           if not any(a <= m.start() < b for a, b in spans)]
+                for name, m in outside:
+                    for s in sorted(srcs):
+                        if norm(m.group(0)) and norm(m.group(0)) in by_name.get(s, ""):
+                            term_hits.append({"file": rel, "line": ln, "term": name,
+                                              "word": m.group(0), "source": s,
+                                              "context": line[max(0, m.start() - 80):m.end() + 80].strip()})
+                            break
+
+    if term_hits:
+        print(f"\n=== TERM-IN-SOURCE ({len(term_hits)}) — a flagged term that the quoted source also uses")
+        for r in term_hits:
+            print(f"  {r['file']}:{r['line']}  [{r['term']}] -> also in {r['source']}")
+            print(f"    …{r['context']}…")
+            print("    -> may be the author's term. Check the source before removing it.")
+
     counts = Counter(r["status"] for r in findings)
     for status, label in (("SPILL", "the document continues in the source's wording"),
                           ("PARTIAL", "head or tail matched but not the whole")):
@@ -159,9 +241,10 @@ def main() -> int:
                     print(f"    {r.get('detail','')}")
     print(f"\n{dict(counts)} across {len(findings)} quotations")
     if args.json:
-        json.dump(findings, open(args.json, "w"), indent=1, ensure_ascii=False)
+        json.dump({"quotations": findings, "paraphrase": paraphrase, "term_in_source": term_hits},
+                  open(args.json, "w"), indent=1, ensure_ascii=False)
         print(f"record written to {args.json}")
-    return 1 if (counts["PARTIAL"] or counts["SPILL"]) else 0
+    return 1 if (counts["PARTIAL"] or counts["SPILL"] or paraphrase or term_hits) else 0
 
 
 if __name__ == "__main__":
