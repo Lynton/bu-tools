@@ -17,6 +17,28 @@ run in CI and in mobile sessions without an install step.
 | `register/scan.py` | Where is the copy reaching for AI-tells, and how dense is the cadence? |
 | `register/quotecheck.py` | Do the quotations match the held sources — and does any passage keep speaking in a source's words *after* the closing mark? |
 
+## Agent use and development
+
+Repository-wide working instructions are single-sourced in [`AGENTS.md`](AGENTS.md).
+[`CLAUDE.md`](CLAUDE.md) imports that file, so Claude Code and Codex receive the same
+engine boundary, compatibility rules and verification expectations without a second
+copy to maintain.
+
+When this repository is mounted as a submodule, the consuming repository remains the
+authority for its own rules and release gates. Changes land and are verified here
+first; each consumer then bumps the pinned commit deliberately.
+
+Baseline checks for engine changes:
+
+```bash
+python3 -m py_compile register/scan.py register/quotecheck.py
+python3 register/scan.py --help
+python3 register/quotecheck.py --help
+```
+
+Behavioural changes also need a focused fixture or reproduction and the relevant
+consumer-specific regression or equivalence gate.
+
 ## Install into a repo
 
 ```bash
