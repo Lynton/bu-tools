@@ -49,6 +49,7 @@ For every Python change, run at minimum:
 
 ```bash
 python3 -m py_compile register/scan.py register/quotecheck.py
+python3 -m unittest discover -v
 python3 register/scan.py --help
 python3 register/quotecheck.py --help
 ```
@@ -57,8 +58,9 @@ Then run the narrow fixture or reproduction for the behaviour changed. Before a
 consumer adopts the commit, run that consumer's configured scan, source-fidelity
 check and any equivalence/regression gate it defines.
 
-Report exactly what ran and what did not. This repository currently has no general
-automated test suite, so do not claim that a full suite passed.
+Report exactly what ran and what did not. GitHub Actions runs the repository suite on
+the oldest and newest supported Python versions; that suite does not replace a
+consumer's own policy and corpus checks.
 
 ## Adoption by consumers
 

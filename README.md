@@ -8,7 +8,8 @@ understanding* is a tell in one and a term of art in the other — so the split 
 engine/config, not one-size-fits-all.
 
 Standard library only, deliberately: no consuming repo gains a dependency, and the tools
-run in CI and in mobile sessions without an install step.
+run in CI and in mobile sessions without an install step. Runtime support starts at
+Python 3.10.
 
 Released under the [MIT License](LICENSE).
 
@@ -34,12 +35,14 @@ Baseline checks for engine changes:
 
 ```bash
 python3 -m py_compile register/scan.py register/quotecheck.py
+python3 -m unittest discover -v
 python3 register/scan.py --help
 python3 register/quotecheck.py --help
 ```
 
-Behavioural changes also need a focused fixture or reproduction and the relevant
-consumer-specific regression or equivalence gate.
+The test suite runs on Python 3.10 and 3.13 in GitHub Actions. Behavioural changes
+also need a focused fixture or reproduction and the relevant consumer-specific
+regression or equivalence gate.
 
 ## Install into a repo
 
@@ -74,6 +77,16 @@ python3 tools/shared/register/quotecheck.py --config tools/register.config.json 
 separates *this pass did this* from *the house has always done this*, and it keeps a
 register repair from quietly becoming an unmandated rewrite.
 
+The scanner reports evidence; it never edits prose. A consumer chooses which evidence
+also fails the command:
+
+- `fail_on_live_hits` makes any non-exempt configured term a failing finding.
+- A positive `density_per_1k_max` fails files above that density. Zero is report-only.
+- Keys present under `cadence.limits` are enforced, including a true zero limit.
+
+This distinction is deliberate. A repository can hold a strict AI-drafting gate while
+still surfacing, rather than automatically removing, an intentional human exception.
+
 ## Config
 
 ```jsonc
@@ -85,8 +98,11 @@ register repair from quietly becoming an unmandated rewrite.
   "exempt_quoted": true,                         // matches inside " " “ ” <q> are exempt
   "exempt_patterns": ["\\*\\*Actually doing:\\*\\*"],   // named apparatus, per line
   "exempt_terms_in_files": { "ARG-03": ["genuine(ly)"] },// path regex -> terms
+  "fail_on_live_hits": false,                    // true = any live term exits 1
   "density_per_1k_max": 0,                       // 0 = report only, never fail
-  "cadence": { "paired_short_closes_max": 0 },
+  "cadence": {
+    "limits": { "paired_short_closes": 0 }      // present 0 = enforce none
+  },
   "quotecheck": {
     "documents": ["canonical", "frontier_log/entries"],
     "sources":   ["project_knowledge/sources"],
@@ -94,6 +110,11 @@ register repair from quietly becoming an unmandated rewrite.
   }
 }
 ```
+
+The original cadence keys (`paired_short_closes_max`, `antithetical_max`, and
+companions) remain compatible. Their zero value keeps its original report-only meaning;
+use `cadence.limits` when zero must be enforceable. JSON output includes a schema version,
+the scan scope, per-file failure reasons and the aggregate `failed` decision.
 
 Exemptions are reported, never hidden — an exempt hit prints with its reason, so a wrong
 exemption is visible rather than silent.
@@ -122,7 +143,8 @@ the fix and none after it.
 first. Both matter more than they sound: attribute quotes (`class="reading"`) and any quotation
 under the 25-character extraction floor still consume their partner mark, and leaving them out
 desynchronises every pair after them — which makes properly quoted text read as own voice, the
-exact error the tool exists to prevent.
+exact error the tool exists to prevent. Apostrophes in contractions are not treated as single
+quotation marks, and long quotations are checked rather than silently falling above a length cap.
 
 TERM-IN-SOURCE is the guard to run before any register sweep. It reports, for every flagged
 term sitting outside quotation marks, whether a source the document quotes uses that same
@@ -149,9 +171,9 @@ marks is not thereby own voice.**
 
 ## Performance
 
-The source index is joined into one blob with NUL separators — the needles are pure `[a-z0-9]`
-after normalisation, so a match can never span a file boundary. Even so, a whole-corpus
-`quotecheck` scales with the number of quotations that are *not* found, each of which costs a
-full scan: roughly two minutes over 1,300 quotations against 216 sources. Scoped to one
-directory it is around ten seconds, which is the shape that matters — the pre-edit check runs on
-what you are editing, and the whole-corpus run is a periodic audit.
+The source index is joined into one blob with NUL separators. Normalised needles contain
+Unicode letters and numbers but never NUL, so a match cannot span a file boundary. Every
+occurrence is retained: when the same quotation appears in several sources, SPILL attribution
+uses the continuation that actually matches instead of whichever file was indexed first.
+Whole-corpus cost still grows with the number of documents, quotations and held sources. Scope
+the pre-edit check to what you are changing; reserve the full corpus for the periodic audit.

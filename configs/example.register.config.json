@@ -13,8 +13,11 @@
   "exempt_quoted": true,
   "exempt_patterns": [],
   "exempt_terms_in_files": {},
+  "fail_on_live_hits": false,
   "density_per_1k_max": 0,
-  "cadence": {},
+  "cadence": {
+    "limits": {}
+  },
   "quotecheck": {
     "documents": ["content"],
     "sources": ["sources"],
