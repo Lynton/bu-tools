@@ -10,6 +10,8 @@ engine/config, not one-size-fits-all.
 Standard library only, deliberately: no consuming repo gains a dependency, and the tools
 run in CI and in mobile sessions without an install step.
 
+Released under the [MIT License](LICENSE).
+
 ## Tools
 
 | Tool | Answers |
